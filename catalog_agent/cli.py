@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import extract
+from . import extract, web_enrich
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +31,28 @@ def main(argv: list[str] | None = None) -> int:
         help="текстовый файл со списком артикулов (по одному на строку) — "
         "ограничить вывод только этими позициями; по умолчанию берутся все "
         "артикулы из каталога и прайс-листов",
+    )
+    parser.add_argument(
+        "--enrich-web",
+        action="store_true",
+        help="дополнить пустые поля (модель, Наименование, Краткое техническое "
+        "описание, ВЕС нетто) данными с bosch-professional.com для позиций, "
+        "где их нет ни в одном из Excel-источников. Никогда не перезаписывает "
+        "уже имеющиеся значения. Проверьте правила использования сайта перед "
+        "регулярным запуском.",
+    )
+    parser.add_argument(
+        "--enrich-delay",
+        type=float,
+        default=0.5,
+        help="пауза между запросами к сайту в секундах (по умолчанию 0.5)",
+    )
+    parser.add_argument(
+        "--enrich-limit",
+        type=int,
+        default=None,
+        help="ограничить число позиций, которые будут проверены на сайте "
+        "(удобно для пробного запуска)",
     )
     args = parser.parse_args(argv)
 
@@ -63,6 +85,24 @@ def main(argv: list[str] | None = None) -> int:
             articles = [line.strip() for line in f if line.strip()]
 
     records, missing_tnved = extract.build_records(catalog, pricelist, customs, articles)
+
+    if args.enrich_web:
+        print("\n[bosch-professional.com] проверяю позиции с пустыми полями…")
+
+        def _progress(article, scraped):
+            status = "найдено" if scraped else "не найдено / не подтверждено"
+            print(f"  {article}: {status}")
+
+        report = web_enrich.enrich_records(
+            records, delay=args.enrich_delay, limit=args.enrich_limit, on_progress=_progress
+        )
+        print(
+            f"[bosch-professional.com] проверено {report['checked']}, "
+            f"дополнено {report['filled']}, не найдено {report['not_found']}, "
+            f"без новых данных {report['no_new_data']}"
+        )
+        missing_tnved = [r["артикул"] for r in records if not r.get("Код ТНВЭД")]
+
     extract.write_output(records, missing_tnved, args.output)
 
     print(f"\nГотово: {len(records)} записей -> {args.output}")
